@@ -167,6 +167,27 @@
       border-bottom: none;
     }
 
+    .guide-table th,
+    .guide-table td {
+      text-align: left;
+      white-space: normal;
+      vertical-align: top;
+    }
+
+    .guide-table td {
+      overflow-wrap: anywhere;
+    }
+
+    .guide-table th:first-child,
+    .guide-table td:first-child {
+      width: 16%;
+    }
+
+    .guide-table th:nth-child(2),
+    .guide-table td:nth-child(2) {
+      width: 24%;
+    }
+
     .metric {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
@@ -358,7 +379,6 @@
             <select id="gemm2OutMode">
               <option value="final">final output write once</option>
               <option value="topk_write" selected>write per topk route</option>
-              <option value="atomic_rmw">atomic read+write per topk</option>
             </select>
           </div>
         </div>
@@ -370,6 +390,9 @@
           <input id="includeTopkWeights" type="checkbox" checked>
           Include gemm2 topk weight read
         </label>
+        <div class="note">
+          gemm2 output traffic modes: <code>write per topk route</code> is the GEMM-only default and counts partial output <code>[M, topk, model_dim]</code>; <code>final output write once</code> only counts the final reduced <code>[M, model_dim]</code> output lower bound.
+        </div>
       </div>
 
       <div class="card span-12">
@@ -480,7 +503,7 @@
 
       <div class="card span-12">
         <h2>Variable Guide</h2>
-        <table>
+        <table class="guide-table">
           <thead>
             <tr>
               <th>Symbol</th>
@@ -527,7 +550,7 @@
             <tr>
               <td><code>out traffic mode</code></td>
               <td><code>gemm2 output traffic</code></td>
-              <td>Controls how final output traffic is estimated: one final write, one write per topk route, or atomic read+write per topk route.</td>
+              <td>Controls gemm2 output traffic: GEMM-only partial output per route, or final reduced output lower-bound.</td>
             </tr>
             <tr>
               <td><code>*_B</code></td>
@@ -581,7 +604,7 @@ gemm2_bytes =
 + gemm2_output_bytes
 + M * topk * topk_weight_B</pre>
         <div class="note">
-          <code>gemm2_output_bytes</code> is configurable. The lower-bound final-output mode uses <code>M * model_dim * out_B</code>. A per-route write estimate uses <code>M * topk * model_dim * out_B</code>. Atomic accumulate can be approximated as read+write per route: <code>2 * M * topk * model_dim * out_B</code>.
+          <code>gemm2_output_bytes</code> is configurable. The default GEMM-only mode uses <code>M * topk * model_dim * out_B</code>. The final-output lower-bound mode uses <code>M * model_dim * out_B</code>.
         </div>
       </div>
     </section>
@@ -774,8 +797,6 @@ gemm2_bytes =
       let gemm2OutputBytes = m * modelDim * outB;
       if (gemm2OutMode === "topk_write") {
         gemm2OutputBytes = m * topk * modelDim * outB;
-      } else if (gemm2OutMode === "atomic_rmw") {
-        gemm2OutputBytes = 2 * m * topk * modelDim * outB;
       }
 
       const gemm1Bytes =
