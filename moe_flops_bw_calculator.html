@@ -353,6 +353,14 @@
             <label for="topkWeightBytes">topk weight dtype</label>
             <select id="topkWeightBytes"></select>
           </div>
+          <div>
+            <label for="gemm2OutMode">gemm2 output traffic</label>
+            <select id="gemm2OutMode">
+              <option value="final">final output write once</option>
+              <option value="topk_write" selected>write per topk route</option>
+              <option value="atomic_rmw">atomic read+write per topk</option>
+            </select>
+          </div>
         </div>
         <label class="checkbox-row">
           <input id="includeScales" type="checkbox" checked>
@@ -470,6 +478,79 @@
         </table>
       </div>
 
+      <div class="card span-12">
+        <h2>Variable Guide</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Input Field</th>
+              <th>Meaning</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>M</code></td>
+              <td><code>M / tokens</code></td>
+              <td>Number of input tokens routed through MoE.</td>
+            </tr>
+            <tr>
+              <td><code>model_dim / K</code></td>
+              <td><code>model_dim / K</code></td>
+              <td>Hidden size. It is the GEMM K dimension for gemm1 and output N dimension for gemm2.</td>
+            </tr>
+            <tr>
+              <td><code>inter_dim / I</code></td>
+              <td><code>inter_dim / I</code></td>
+              <td>Expert intermediate size after activation. For SwiGLU gemm1 computes gate and up, so gemm1 N is <code>2 * I</code>.</td>
+            </tr>
+            <tr>
+              <td><code>E</code></td>
+              <td><code>experts / E</code></td>
+              <td>Total number of experts in the layer.</td>
+            </tr>
+            <tr>
+              <td><code>topk / T</code></td>
+              <td><code>topk / T</code></td>
+              <td>Experts selected per token. MoE compute uses routed rows <code>M * topk</code>, not <code>M * E</code>.</td>
+            </tr>
+            <tr>
+              <td><code>active_E</code></td>
+              <td><code>experts read for weights</code></td>
+              <td>How many experts' weights are read at least once. For large balanced/random routing this is usually close to <code>E</code>.</td>
+            </tr>
+            <tr>
+              <td><code>time_us</code></td>
+              <td><code>gemm1 time</code>, <code>gemm2 time</code></td>
+              <td>Measured kernel time in microseconds. TFLOPS and BW are divided by this value.</td>
+            </tr>
+            <tr>
+              <td><code>out traffic mode</code></td>
+              <td><code>gemm2 output traffic</code></td>
+              <td>Controls how final output traffic is estimated: one final write, one write per topk route, or atomic read+write per topk route.</td>
+            </tr>
+            <tr>
+              <td><code>*_B</code></td>
+              <td>DType byte presets</td>
+              <td>Bytes per element for each tensor. Example: fp8 is 1 byte, bf16 is 2 bytes, fp32 is 4 bytes.</td>
+            </tr>
+            <tr>
+              <td><code>group</code></td>
+              <td><code>scale group size</code></td>
+              <td>Number of values covered by one block scale. MXFP8/MXFP4 commonly use group size 32.</td>
+            </tr>
+            <tr>
+              <td><code>scale_B</code></td>
+              <td><code>scale dtype</code></td>
+              <td>Bytes per block-scale value. For e8m0 scale this is 1 byte.</td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="note">
+          The bandwidth model is a lower-bound traffic estimate. It counts the required activation, weight, output, scale, and topk-weight traffic, but it does not include routing metadata, cache misses, repeated tile loads, or temporary scratch traffic.
+        </div>
+      </div>
+
       <div class="card span-6">
         <h2>FLOPs Formula</h2>
         <pre>gemm1_flops = 2 * M * topk * model_dim * (2 * inter_dim)
@@ -477,6 +558,9 @@ gemm2_flops = 2 * M * topk * inter_dim * model_dim
 total_flops = gemm1_flops + gemm2_flops
 
 TFLOPS = flops / (time_us * 1e-6) / 1e12</pre>
+        <div class="note">
+          The leading 2 is for FMA as two operations: multiply plus add. Expert count does not appear in FLOPs because each token only computes its selected topk experts.
+        </div>
       </div>
 
       <div class="card span-6">
@@ -494,8 +578,11 @@ gemm2_bytes =
 + M * topk * ceil(inter_dim / group) * scale_B
 + active_E * model_dim * inter_dim * W2_B
 + active_E * model_dim * ceil(inter_dim / group) * scale_B
-+ M * model_dim * out_B
++ gemm2_output_bytes
 + M * topk * topk_weight_B</pre>
+        <div class="note">
+          <code>gemm2_output_bytes</code> is configurable. The lower-bound final-output mode uses <code>M * model_dim * out_B</code>. A per-route write estimate uses <code>M * topk * model_dim * out_B</code>. Atomic accumulate can be approximated as read+write per route: <code>2 * M * topk * model_dim * out_B</code>.
+        </div>
       </div>
     </section>
   </main>
@@ -666,6 +753,7 @@ gemm2_bytes =
       const group = number("scaleGroup");
       const includeScales = document.getElementById("includeScales").checked;
       const includeTopkWeights = document.getElementById("includeTopkWeights").checked;
+      const gemm2OutMode = document.getElementById("gemm2OutMode").value;
       const peakTflops = number("peakTflops");
       const peakBw = number("peakBw");
 
@@ -683,6 +771,12 @@ gemm2_bytes =
 
       const modelScaleCols = ceilDiv(modelDim, group);
       const interScaleCols = ceilDiv(interDim, group);
+      let gemm2OutputBytes = m * modelDim * outB;
+      if (gemm2OutMode === "topk_write") {
+        gemm2OutputBytes = m * topk * modelDim * outB;
+      } else if (gemm2OutMode === "atomic_rmw") {
+        gemm2OutputBytes = 2 * m * topk * modelDim * outB;
+      }
 
       const gemm1Bytes =
         m * topk * modelDim * a1B +
@@ -697,7 +791,7 @@ gemm2_bytes =
         m * topk * interScaleCols * scaleB +
         experts * modelDim * interDim * w2B +
         experts * modelDim * interScaleCols * scaleB +
-        m * modelDim * outB +
+        gemm2OutputBytes +
         m * topk * topkWeightB;
 
       const totalFlops = gemm1Flops + gemm2Flops;
