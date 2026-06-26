@@ -1,0 +1,762 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MoE FLOPs and Bandwidth Calculator</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0f172a;
+      --panel: #111827;
+      --panel-2: #1f2937;
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --line: #374151;
+      --accent: #60a5fa;
+      --good: #34d399;
+      --warn: #fbbf24;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: linear-gradient(180deg, #0b1120 0%, var(--bg) 100%);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.45;
+    }
+
+    main {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 32px 20px 48px;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 28px;
+      letter-spacing: -0.02em;
+    }
+
+    h2 {
+      margin: 0 0 16px;
+      font-size: 18px;
+    }
+
+    p {
+      color: var(--muted);
+      margin: 0 0 18px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 16px;
+    }
+
+    .card {
+      background: rgba(17, 24, 39, 0.92);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 18px;
+      box-shadow: 0 18px 40px rgba(0, 0, 0, 0.25);
+    }
+
+    .span-4 {
+      grid-column: span 4;
+    }
+
+    .span-6 {
+      grid-column: span 6;
+    }
+
+    .span-8 {
+      grid-column: span 8;
+    }
+
+    .span-12 {
+      grid-column: span 12;
+    }
+
+    label {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 6px;
+    }
+
+    input,
+    select {
+      width: 100%;
+      height: 38px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: var(--panel-2);
+      color: var(--text);
+      padding: 8px 10px;
+      font-size: 14px;
+    }
+
+    input:focus,
+    select:focus {
+      border-color: var(--accent);
+      outline: none;
+      box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.16);
+    }
+
+    .field-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+    }
+
+    .dtype-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .checkbox-row input {
+      width: 16px;
+      height: 16px;
+      margin: 0;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      overflow: hidden;
+      border-radius: 10px;
+    }
+
+    th,
+    td {
+      padding: 11px 12px;
+      border-bottom: 1px solid var(--line);
+      text-align: right;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+
+    th:first-child,
+    td:first-child {
+      text-align: left;
+    }
+
+    th {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+      background: rgba(31, 41, 55, 0.7);
+    }
+
+    tr:last-child td {
+      border-bottom: none;
+    }
+
+    .metric {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+
+    .metric-box {
+      background: rgba(31, 41, 55, 0.7);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 14px;
+    }
+
+    .metric-label {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .metric-value {
+      color: var(--good);
+      font-size: 24px;
+      font-weight: 700;
+      margin-top: 4px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    code,
+    pre {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    }
+
+    pre {
+      margin: 0;
+      padding: 14px;
+      overflow-x: auto;
+      background: #020617;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      color: #cbd5e1;
+      font-size: 13px;
+    }
+
+    .note {
+      color: var(--warn);
+      font-size: 13px;
+      margin-top: 10px;
+    }
+
+    .actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 14px;
+    }
+
+    button {
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: var(--panel-2);
+      color: var(--text);
+      padding: 9px 12px;
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    button:hover {
+      border-color: var(--accent);
+    }
+
+    @media (max-width: 960px) {
+      .span-4,
+      .span-6,
+      .span-8 {
+        grid-column: span 12;
+      }
+
+      .field-grid,
+      .dtype-grid,
+      .metric {
+        grid-template-columns: repeat(2, 1fr);
+      }
+    }
+
+    @media (max-width: 620px) {
+      .field-grid,
+      .dtype-grid,
+      .metric {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>MoE FLOPs and Bandwidth Calculator</h1>
+    <p>
+      Computes MoE GEMM1/GEMM2 FLOPs from routed rows (<code>M * topk</code>) and estimates lower-bound memory traffic for dtype/scale choices.
+    </p>
+
+    <section class="grid">
+      <div class="card span-8">
+        <h2>Shape and Timing</h2>
+        <div class="field-grid">
+          <div>
+            <label for="m">M / tokens</label>
+            <input id="m" type="number" min="1" step="1" value="32768">
+          </div>
+          <div>
+            <label for="modelDim">model_dim / K</label>
+            <input id="modelDim" type="number" min="1" step="1" value="6144">
+          </div>
+          <div>
+            <label for="interDim">inter_dim / I</label>
+            <input id="interDim" type="number" min="1" step="1" value="768">
+          </div>
+          <div>
+            <label for="experts">experts / E</label>
+            <input id="experts" type="number" min="1" step="1" value="129">
+          </div>
+          <div>
+            <label for="topk">topk / T</label>
+            <input id="topk" type="number" min="1" step="1" value="5">
+          </div>
+          <div>
+            <label for="activeExperts">experts read for weights</label>
+            <input id="activeExperts" type="number" min="1" step="1" value="129">
+          </div>
+          <div>
+            <label for="gemm1Us">gemm1 time (us)</label>
+            <input id="gemm1Us" type="number" min="0.0001" step="0.0001" value="1600">
+          </div>
+          <div>
+            <label for="gemm2Us">gemm2 time (us)</label>
+            <input id="gemm2Us" type="number" min="0.0001" step="0.0001" value="1423">
+          </div>
+        </div>
+        <div class="actions">
+          <button type="button" data-preset="m3488i768">Preset: M3488 I768</button>
+          <button type="button" data-preset="m3488i384">Preset: M3488 I384</button>
+          <button type="button" data-preset="m32768i768">Preset: M32768 I768</button>
+          <button type="button" data-preset="m32768i384">Preset: M32768 I384</button>
+        </div>
+        <div class="note">
+          Weight traffic uses "experts read for weights"; for balanced/random large-M MoE this is usually close to E.
+        </div>
+      </div>
+
+      <div class="card span-4">
+        <h2>DType Byte Presets</h2>
+        <div class="dtype-grid">
+          <div>
+            <label for="a1Bytes">A1 dtype</label>
+            <select id="a1Bytes"></select>
+          </div>
+          <div>
+            <label for="w1Bytes">W1 dtype</label>
+            <select id="w1Bytes"></select>
+          </div>
+          <div>
+            <label for="stage1OutBytes">stage1 out dtype</label>
+            <select id="stage1OutBytes"></select>
+          </div>
+          <div>
+            <label for="a2Bytes">A2 dtype</label>
+            <select id="a2Bytes"></select>
+          </div>
+          <div>
+            <label for="w2Bytes">W2 dtype</label>
+            <select id="w2Bytes"></select>
+          </div>
+          <div>
+            <label for="outBytes">final out dtype</label>
+            <select id="outBytes"></select>
+          </div>
+          <div>
+            <label for="scaleBytes">scale dtype</label>
+            <select id="scaleBytes"></select>
+          </div>
+          <div>
+            <label for="scaleGroup">scale group size</label>
+            <input id="scaleGroup" type="number" min="1" step="1" value="32">
+          </div>
+          <div>
+            <label for="topkWeightBytes">topk weight dtype</label>
+            <select id="topkWeightBytes"></select>
+          </div>
+        </div>
+        <label class="checkbox-row">
+          <input id="includeScales" type="checkbox" checked>
+          Include block scale traffic
+        </label>
+        <label class="checkbox-row">
+          <input id="includeTopkWeights" type="checkbox" checked>
+          Include gemm2 topk weight read
+        </label>
+      </div>
+
+      <div class="card span-12">
+        <h2>GPU Theoretical Roofline</h2>
+        <div class="field-grid">
+          <div>
+            <label for="gpuPreset">GPU preset</label>
+            <select id="gpuPreset">
+              <option value="mi355x">AMD MI355X</option>
+              <option value="mi308">AMD MI300X official / MI308 fallback</option>
+              <option value="mi400">AMD MI400 preview</option>
+              <option value="custom">Custom</option>
+            </select>
+          </div>
+          <div>
+            <label for="precisionPreset">precision preset</label>
+            <select id="precisionPreset">
+              <option value="fp8">FP8 / MXFP8</option>
+              <option value="bf16">BF16 / FP16</option>
+              <option value="fp4">FP4 / MXFP4</option>
+            </select>
+          </div>
+          <div>
+            <label for="peakTflops">peak compute (TFLOPS)</label>
+            <input id="peakTflops" type="number" min="0" step="0.01" value="5000">
+          </div>
+          <div>
+            <label for="peakBw">peak HBM bandwidth (TB/s)</label>
+            <input id="peakBw" type="number" min="0" step="0.001" value="8">
+          </div>
+        </div>
+        <div class="note">
+          Presets are for quick roofline comparison only. MI355X uses AMD-published FP8 5 PFLOPS and 8 TB/s HBM. MI300X uses AMD-published FP8 2614.9 TFLOPS and 5.325 TB/s HBM, and is used here as the MI308 fallback. MI400 uses AMD preview numbers.
+        </div>
+      </div>
+
+      <div class="card span-12">
+        <h2>Results</h2>
+        <div class="metric">
+          <div class="metric-box">
+            <div class="metric-label">Total TFLOPS</div>
+            <div class="metric-value" id="totalTflops">0</div>
+          </div>
+          <div class="metric-box">
+            <div class="metric-label">Total BW</div>
+            <div class="metric-value" id="totalBw">0</div>
+          </div>
+          <div class="metric-box">
+            <div class="metric-label">Total Traffic</div>
+            <div class="metric-value" id="totalBytes">0</div>
+          </div>
+          <div class="metric-box">
+            <div class="metric-label">Compute Peak Util</div>
+            <div class="metric-value" id="totalComputeUtil">0</div>
+          </div>
+          <div class="metric-box">
+            <div class="metric-label">BW Peak Util</div>
+            <div class="metric-value" id="totalBwUtil">0</div>
+          </div>
+        </div>
+        <table style="margin-top: 16px;">
+          <thead>
+            <tr>
+              <th>Stage</th>
+              <th>FLOPs</th>
+              <th>TFLOPS</th>
+              <th>Traffic</th>
+              <th>BW</th>
+              <th>AI</th>
+              <th>Compute util</th>
+              <th>BW util</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>gemm1</td>
+              <td id="gemm1Flops">0</td>
+              <td id="gemm1Tflops">0</td>
+              <td id="gemm1Bytes">0</td>
+              <td id="gemm1Bw">0</td>
+              <td id="gemm1Ai">0</td>
+              <td id="gemm1ComputeUtil">0</td>
+              <td id="gemm1BwUtil">0</td>
+            </tr>
+            <tr>
+              <td>gemm2</td>
+              <td id="gemm2Flops">0</td>
+              <td id="gemm2Tflops">0</td>
+              <td id="gemm2Bytes">0</td>
+              <td id="gemm2Bw">0</td>
+              <td id="gemm2Ai">0</td>
+              <td id="gemm2ComputeUtil">0</td>
+              <td id="gemm2BwUtil">0</td>
+            </tr>
+            <tr>
+              <td>total</td>
+              <td id="sumFlops">0</td>
+              <td id="sumTflops">0</td>
+              <td id="sumBytes">0</td>
+              <td id="sumBw">0</td>
+              <td id="sumAi">0</td>
+              <td id="sumComputeUtil">0</td>
+              <td id="sumBwUtil">0</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="card span-6">
+        <h2>FLOPs Formula</h2>
+        <pre>gemm1_flops = 2 * M * topk * model_dim * (2 * inter_dim)
+gemm2_flops = 2 * M * topk * inter_dim * model_dim
+total_flops = gemm1_flops + gemm2_flops
+
+TFLOPS = flops / (time_us * 1e-6) / 1e12</pre>
+      </div>
+
+      <div class="card span-6">
+        <h2>Traffic Formula</h2>
+        <pre>gemm1_bytes =
+  M * topk * model_dim * A1_B
++ M * topk * ceil(model_dim / group) * scale_B
++ active_E * (2 * inter_dim) * model_dim * W1_B
++ active_E * (2 * inter_dim) * ceil(model_dim / group) * scale_B
++ M * topk * inter_dim * stage1_out_B
++ M * topk * ceil(inter_dim / group) * scale_B
+
+gemm2_bytes =
+  M * topk * inter_dim * A2_B
++ M * topk * ceil(inter_dim / group) * scale_B
++ active_E * model_dim * inter_dim * W2_B
++ active_E * model_dim * ceil(inter_dim / group) * scale_B
++ M * model_dim * out_B
++ M * topk * topk_weight_B</pre>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const dtypeOptions = [
+      ["fp32 / float32", 4],
+      ["bf16", 2],
+      ["fp16", 2],
+      ["fp8 / int8", 1],
+      ["e8m0 scale", 1],
+      ["fp4 scalar", 0.5],
+      ["int4 scalar", 0.5],
+      ["none", 0],
+    ];
+
+    const presets = {
+      m3488i768: { m: 3488, interDim: 768, gemm1Us: 397.7362, gemm2Us: 277.7621 },
+      m3488i384: { m: 3488, interDim: 384, gemm1Us: 217.4447, gemm2Us: 195.3725 },
+      m32768i768: { m: 32768, interDim: 768, gemm1Us: 1642.7538, gemm2Us: 1863.3741 },
+      m32768i384: { m: 32768, interDim: 384, gemm1Us: 893.4327, gemm2Us: 1435.9532 },
+    };
+
+    const gpuPresets = {
+      mi355x: {
+        fp8: { peakTflops: 5000, peakBw: 8 },
+        bf16: { peakTflops: 2500, peakBw: 8 },
+        fp4: { peakTflops: 10000, peakBw: 8 },
+      },
+      mi308: {
+        // AMD MI300X official values, used as the editable MI308 fallback.
+        fp8: { peakTflops: 2614.9, peakBw: 5.325 },
+        bf16: { peakTflops: 1307.4, peakBw: 5.325 },
+        fp4: { peakTflops: 5229.8, peakBw: 5.325 },
+      },
+      mi400: {
+        // AMD preview numbers for quick what-if comparison, editable in the UI.
+        fp8: { peakTflops: 20000, peakBw: 19.6 },
+        bf16: { peakTflops: 10000, peakBw: 19.6 },
+        fp4: { peakTflops: 40000, peakBw: 19.6 },
+      },
+    };
+
+    const dtypeSelectIds = [
+      "a1Bytes",
+      "w1Bytes",
+      "stage1OutBytes",
+      "a2Bytes",
+      "w2Bytes",
+      "outBytes",
+      "scaleBytes",
+      "topkWeightBytes",
+    ];
+
+    function populateDtypeSelects() {
+      dtypeSelectIds.forEach((id) => {
+        const select = document.getElementById(id);
+        dtypeOptions.forEach(([label, bytes]) => {
+          const option = document.createElement("option");
+          option.value = String(bytes);
+          option.textContent = `${label} (${bytes} B)`;
+          select.appendChild(option);
+        });
+      });
+
+      setValue("a1Bytes", 1);
+      setValue("w1Bytes", 1);
+      setValue("stage1OutBytes", 1);
+      setValue("a2Bytes", 1);
+      setValue("w2Bytes", 1);
+      setValue("outBytes", 2);
+      setValue("scaleBytes", 1);
+      setValue("topkWeightBytes", 4);
+    }
+
+    function setValue(id, value) {
+      document.getElementById(id).value = String(value);
+    }
+
+    function number(id) {
+      const value = Number(document.getElementById(id).value);
+      return Number.isFinite(value) ? value : 0;
+    }
+
+    function ceilDiv(a, b) {
+      if (b <= 0) {
+        return 0;
+      }
+      return Math.ceil(a / b);
+    }
+
+    function fmtNumber(value, digits = 2) {
+      if (!Number.isFinite(value)) {
+        return "0";
+      }
+      return value.toLocaleString(undefined, {
+        maximumFractionDigits: digits,
+      });
+    }
+
+    function fmtBytes(bytes) {
+      const abs = Math.abs(bytes);
+      if (abs >= 1e12) {
+        return `${fmtNumber(bytes / 1e12, 3)} TB`;
+      }
+      if (abs >= 1e9) {
+        return `${fmtNumber(bytes / 1e9, 3)} GB`;
+      }
+      if (abs >= 1e6) {
+        return `${fmtNumber(bytes / 1e6, 3)} MB`;
+      }
+      return `${fmtNumber(bytes, 0)} B`;
+    }
+
+    function tflops(flops, us) {
+      return us > 0 ? flops / (us * 1e-6) / 1e12 : 0;
+    }
+
+    function bandwidth(bytes, us) {
+      return us > 0 ? bytes / (us * 1e-6) / 1e12 : 0;
+    }
+
+    function percent(value, peak) {
+      return peak > 0 ? (value / peak) * 100 : 0;
+    }
+
+    function fmtPercent(value) {
+      return `${fmtNumber(value, 2)}%`;
+    }
+
+    function renderStage(prefix, flops, bytes, us, peakTflops, peakBw) {
+      const stageTflops = tflops(flops, us);
+      const stageBw = bandwidth(bytes, us);
+      document.getElementById(`${prefix}Flops`).textContent = fmtNumber(flops, 0);
+      document.getElementById(`${prefix}Tflops`).textContent = fmtNumber(stageTflops, 2);
+      document.getElementById(`${prefix}Bytes`).textContent = fmtBytes(bytes);
+      document.getElementById(`${prefix}Bw`).textContent = `${fmtNumber(stageBw, 3)} TB/s`;
+      document.getElementById(`${prefix}Ai`).textContent = `${fmtNumber(bytes > 0 ? flops / bytes : 0, 1)} flop/B`;
+      document.getElementById(`${prefix}ComputeUtil`).textContent = fmtPercent(percent(stageTflops, peakTflops));
+      document.getElementById(`${prefix}BwUtil`).textContent = fmtPercent(percent(stageBw, peakBw));
+    }
+
+    function applyGpuPreset() {
+      const gpu = document.getElementById("gpuPreset").value;
+      const precision = document.getElementById("precisionPreset").value;
+      if (gpu === "custom") {
+        calculate();
+        return;
+      }
+
+      const preset = gpuPresets[gpu] && gpuPresets[gpu][precision];
+      if (!preset) {
+        return;
+      }
+      setValue("peakTflops", preset.peakTflops);
+      setValue("peakBw", preset.peakBw);
+      calculate();
+    }
+
+    function calculate() {
+      const m = number("m");
+      const modelDim = number("modelDim");
+      const interDim = number("interDim");
+      const experts = number("activeExperts");
+      const topk = number("topk");
+      const gemm1Us = number("gemm1Us");
+      const gemm2Us = number("gemm2Us");
+      const group = number("scaleGroup");
+      const includeScales = document.getElementById("includeScales").checked;
+      const includeTopkWeights = document.getElementById("includeTopkWeights").checked;
+      const peakTflops = number("peakTflops");
+      const peakBw = number("peakBw");
+
+      const a1B = number("a1Bytes");
+      const w1B = number("w1Bytes");
+      const stage1OutB = number("stage1OutBytes");
+      const a2B = number("a2Bytes");
+      const w2B = number("w2Bytes");
+      const outB = number("outBytes");
+      const scaleB = includeScales ? number("scaleBytes") : 0;
+      const topkWeightB = includeTopkWeights ? number("topkWeightBytes") : 0;
+
+      const gemm1Flops = 2 * m * topk * modelDim * (2 * interDim);
+      const gemm2Flops = 2 * m * topk * interDim * modelDim;
+
+      const modelScaleCols = ceilDiv(modelDim, group);
+      const interScaleCols = ceilDiv(interDim, group);
+
+      const gemm1Bytes =
+        m * topk * modelDim * a1B +
+        m * topk * modelScaleCols * scaleB +
+        experts * (2 * interDim) * modelDim * w1B +
+        experts * (2 * interDim) * modelScaleCols * scaleB +
+        m * topk * interDim * stage1OutB +
+        m * topk * interScaleCols * scaleB;
+
+      const gemm2Bytes =
+        m * topk * interDim * a2B +
+        m * topk * interScaleCols * scaleB +
+        experts * modelDim * interDim * w2B +
+        experts * modelDim * interScaleCols * scaleB +
+        m * modelDim * outB +
+        m * topk * topkWeightB;
+
+      const totalFlops = gemm1Flops + gemm2Flops;
+      const totalBytesValue = gemm1Bytes + gemm2Bytes;
+      const totalUs = gemm1Us + gemm2Us;
+      const totalTflopsValue = tflops(totalFlops, totalUs);
+      const totalBwValue = bandwidth(totalBytesValue, totalUs);
+
+      renderStage("gemm1", gemm1Flops, gemm1Bytes, gemm1Us, peakTflops, peakBw);
+      renderStage("gemm2", gemm2Flops, gemm2Bytes, gemm2Us, peakTflops, peakBw);
+
+      document.getElementById("sumFlops").textContent = fmtNumber(totalFlops, 0);
+      document.getElementById("sumTflops").textContent = fmtNumber(totalTflopsValue, 2);
+      document.getElementById("sumBytes").textContent = fmtBytes(totalBytesValue);
+      document.getElementById("sumBw").textContent = `${fmtNumber(totalBwValue, 3)} TB/s`;
+      document.getElementById("sumAi").textContent = `${fmtNumber(totalBytesValue > 0 ? totalFlops / totalBytesValue : 0, 1)} flop/B`;
+      document.getElementById("sumComputeUtil").textContent = fmtPercent(percent(totalTflopsValue, peakTflops));
+      document.getElementById("sumBwUtil").textContent = fmtPercent(percent(totalBwValue, peakBw));
+
+      document.getElementById("totalTflops").textContent = fmtNumber(totalTflopsValue, 2);
+      document.getElementById("totalBw").textContent = `${fmtNumber(totalBwValue, 3)} TB/s`;
+      document.getElementById("totalBytes").textContent = fmtBytes(totalBytesValue);
+      document.getElementById("totalComputeUtil").textContent = fmtPercent(percent(totalTflopsValue, peakTflops));
+      document.getElementById("totalBwUtil").textContent = fmtPercent(percent(totalBwValue, peakBw));
+    }
+
+    function attachHandlers() {
+      document.querySelectorAll("input, select").forEach((element) => {
+        element.addEventListener("input", calculate);
+        element.addEventListener("change", calculate);
+      });
+
+      document.querySelectorAll("button[data-preset]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const preset = presets[button.dataset.preset];
+          Object.entries(preset).forEach(([id, value]) => setValue(id, value));
+          calculate();
+        });
+      });
+
+      document.getElementById("experts").addEventListener("input", () => {
+        setValue("activeExperts", number("experts"));
+        calculate();
+      });
+
+      document.getElementById("gpuPreset").addEventListener("change", applyGpuPreset);
+      document.getElementById("precisionPreset").addEventListener("change", applyGpuPreset);
+      document.getElementById("peakTflops").addEventListener("input", () => {
+        setValue("gpuPreset", "custom");
+      });
+      document.getElementById("peakBw").addEventListener("input", () => {
+        setValue("gpuPreset", "custom");
+      });
+    }
+
+    populateDtypeSelects();
+    attachHandlers();
+    applyGpuPreset();
+    calculate();
+  </script>
+</body>
+</html>
