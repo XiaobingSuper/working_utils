@@ -331,7 +331,7 @@
           <button type="button" data-preset="m32768i384">Preset: M32768 I384</button>
         </div>
         <div class="note">
-          Weight traffic uses "experts read for weights"; for balanced/random large-M MoE this is usually close to E.
+          Weight traffic uses "experts read for weights", capped by <code>min(E, M * topk)</code>. For balanced/random large-M MoE this is usually close to <code>E</code>.
         </div>
       </div>
 
@@ -535,12 +535,12 @@
             <tr>
               <td><code>topk / T</code></td>
               <td><code>topk / T</code></td>
-              <td>Experts selected per token. MoE compute uses routed rows <code>M * topk</code>, not <code>M * E</code>.</td>
+              <td>Experts selected per token. MoE compute uses routed rows <code>M * topk</code>, not <code>M * E</code>. The calculator caps effective topk at <code>E</code>.</td>
             </tr>
             <tr>
               <td><code>active_E</code></td>
               <td><code>experts read for weights</code></td>
-              <td>How many experts' weights are read at least once. For large balanced/random routing this is usually close to <code>E</code>.</td>
+              <td>How many unique experts' weights are read at least once. The calculator caps this at <code>min(E, M * topk)</code>; enter a lower measured value for skewed routing.</td>
             </tr>
             <tr>
               <td><code>time_us</code></td>
@@ -576,8 +576,10 @@
 
       <div class="card span-6">
         <h2>FLOPs Formula</h2>
-        <pre>gemm1_flops = 2 * M * topk * model_dim * (2 * inter_dim)
-gemm2_flops = 2 * M * topk * inter_dim * model_dim
+        <pre>effective_topk = min(topk, E)
+
+gemm1_flops = 2 * M * effective_topk * model_dim * (2 * inter_dim)
+gemm2_flops = 2 * M * effective_topk * inter_dim * model_dim
 total_flops = gemm1_flops + gemm2_flops
 
 TFLOPS = flops / (time_us * 1e-6) / 1e12</pre>
@@ -588,23 +590,26 @@ TFLOPS = flops / (time_us * 1e-6) / 1e12</pre>
 
       <div class="card span-6">
         <h2>Traffic Formula</h2>
-        <pre>gemm1_bytes =
-  M * topk * model_dim * A1_B
-+ M * topk * ceil(model_dim / group) * scale_B
-+ active_E * (2 * inter_dim) * model_dim * W1_B
-+ active_E * (2 * inter_dim) * ceil(model_dim / group) * scale_B
-+ M * topk * inter_dim * stage1_out_B
-+ M * topk * ceil(inter_dim / group) * scale_B
+        <pre>effective_topk = min(topk, E)
+effective_active_E = min(active_E input, E, M * effective_topk)
+
+gemm1_bytes =
+  M * effective_topk * model_dim * A1_B
++ M * effective_topk * ceil(model_dim / group) * scale_B
++ effective_active_E * (2 * inter_dim) * model_dim * W1_B
++ effective_active_E * (2 * inter_dim) * ceil(model_dim / group) * scale_B
++ M * effective_topk * inter_dim * stage1_out_B
++ M * effective_topk * ceil(inter_dim / group) * scale_B
 
 gemm2_bytes =
-  M * topk * inter_dim * A2_B
-+ M * topk * ceil(inter_dim / group) * scale_B
-+ active_E * model_dim * inter_dim * W2_B
-+ active_E * model_dim * ceil(inter_dim / group) * scale_B
+  M * effective_topk * inter_dim * A2_B
++ M * effective_topk * ceil(inter_dim / group) * scale_B
++ effective_active_E * model_dim * inter_dim * W2_B
++ effective_active_E * model_dim * ceil(inter_dim / group) * scale_B
 + gemm2_output_bytes
-+ M * topk * topk_weight_B</pre>
++ M * effective_topk * topk_weight_B</pre>
         <div class="note">
-          <code>gemm2_output_bytes</code> is configurable. The default GEMM-only mode uses <code>M * topk * model_dim * out_B</code>. The final-output lower-bound mode uses <code>M * model_dim * out_B</code>.
+          <code>gemm2_output_bytes</code> is configurable. The default GEMM-only mode uses <code>M * effective_topk * model_dim * out_B</code>. The final-output lower-bound mode uses <code>M * model_dim * out_B</code>.
         </div>
       </div>
     </section>
@@ -687,7 +692,7 @@ gemm2_bytes =
 
     function number(id) {
       const value = Number(document.getElementById(id).value);
-      return Number.isFinite(value) ? value : 0;
+      return Number.isFinite(value) ? Math.max(0, value) : 0;
     }
 
     function ceilDiv(a, b) {
@@ -695,6 +700,49 @@ gemm2_bytes =
         return 0;
       }
       return Math.ceil(a / b);
+    }
+
+    let lastExpertsReadCap = null;
+
+    function cappedTopk(requestedTopk, totalExperts) {
+      if (totalExperts <= 0) {
+        return 0;
+      }
+      return Math.min(requestedTopk, totalExperts);
+    }
+
+    function updateTopkLimit(requestedTopk, totalExperts) {
+      const topkInput = document.getElementById("topk");
+      if (totalExperts > 0) {
+        topkInput.max = String(totalExperts);
+      } else {
+        topkInput.removeAttribute("max");
+      }
+
+      const effectiveTopk = cappedTopk(requestedTopk, totalExperts);
+      if (totalExperts > 0 && requestedTopk > effectiveTopk) {
+        setValue("topk", effectiveTopk);
+      }
+      return effectiveTopk;
+    }
+
+    function updateExpertsReadLimit(m, effectiveTopk, totalExperts) {
+      const activeExpertsInput = document.getElementById("activeExperts");
+      const cap = Math.max(0, Math.min(totalExperts, m * effectiveTopk));
+      if (cap > 0) {
+        activeExpertsInput.max = String(cap);
+      } else {
+        activeExpertsInput.removeAttribute("max");
+      }
+
+      const current = number("activeExperts");
+      const wasTrackingCap = lastExpertsReadCap !== null && current === lastExpertsReadCap;
+      if (cap > 0 && (current > cap || wasTrackingCap)) {
+        setValue("activeExperts", cap);
+      }
+
+      lastExpertsReadCap = cap;
+      return Math.max(0, Math.min(number("activeExperts"), cap));
     }
 
     function fmtNumber(value, digits = 2) {
@@ -769,8 +817,10 @@ gemm2_bytes =
       const m = number("m");
       const modelDim = number("modelDim");
       const interDim = number("interDim");
-      const experts = number("activeExperts");
-      const topk = number("topk");
+      const totalExperts = number("experts");
+      const requestedTopk = number("topk");
+      const topk = updateTopkLimit(requestedTopk, totalExperts);
+      const expertsRead = updateExpertsReadLimit(m, topk, totalExperts);
       const gemm1Us = number("gemm1Us");
       const gemm2Us = number("gemm2Us");
       const group = number("scaleGroup");
@@ -802,16 +852,16 @@ gemm2_bytes =
       const gemm1Bytes =
         m * topk * modelDim * a1B +
         m * topk * modelScaleCols * scaleB +
-        experts * (2 * interDim) * modelDim * w1B +
-        experts * (2 * interDim) * modelScaleCols * scaleB +
+        expertsRead * (2 * interDim) * modelDim * w1B +
+        expertsRead * (2 * interDim) * modelScaleCols * scaleB +
         m * topk * interDim * stage1OutB +
         m * topk * interScaleCols * scaleB;
 
       const gemm2Bytes =
         m * topk * interDim * a2B +
         m * topk * interScaleCols * scaleB +
-        experts * modelDim * interDim * w2B +
-        experts * modelDim * interScaleCols * scaleB +
+        expertsRead * modelDim * interDim * w2B +
+        expertsRead * modelDim * interScaleCols * scaleB +
         gemm2OutputBytes +
         m * topk * topkWeightB;
 
@@ -851,11 +901,6 @@ gemm2_bytes =
           Object.entries(preset).forEach(([id, value]) => setValue(id, value));
           calculate();
         });
-      });
-
-      document.getElementById("experts").addEventListener("input", () => {
-        setValue("activeExperts", number("experts"));
-        calculate();
       });
 
       document.getElementById("gpuPreset").addEventListener("change", applyGpuPreset);
